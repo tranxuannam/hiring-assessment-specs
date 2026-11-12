@@ -1,0 +1,468 @@
+openapi: 3.1.0
+info:
+  title: Hiring Assessment API
+  version: 1.0.0
+  description: Backend-owned API. Candidate responses must never include score or HR-only data.
+servers:
+  - url: http://localhost:8000/api/v1
+tags:
+  - name: Candidate
+  - name: HR
+security: []
+paths:
+  /health:
+    get:
+      tags: [Candidate]
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+
+  /candidate/interview:
+    get:
+      tags: [Candidate]
+      operationId: getCandidateInterview
+      security: [{ CandidateToken: [] }]
+      responses:
+        "200":
+          description: Own interview questions and progress only; no grades.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateInterview"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /candidate/progress:
+    get:
+      tags: [Candidate]
+      operationId: getCandidateProgress
+      security: [{ CandidateToken: [] }]
+      responses:
+        "200":
+          description: Current question and submitted question IDs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateProgress"
+
+  /candidate/answers:
+    post:
+      tags: [Candidate]
+      operationId: submitCandidateAnswer
+      security: [{ CandidateToken: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnswerSubmissionRequest"
+      responses:
+        "201":
+          description: New answer accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnswerSubmissionReceipt"
+        "200":
+          description: Idempotent replay; returns existing receipt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnswerSubmissionReceipt"
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /candidate/answers/{responseId}/audio:
+    post:
+      tags: [Candidate]
+      operationId: uploadCandidateAudio
+      security: [{ CandidateToken: [] }]
+      parameters:
+        - in: path
+          name: responseId
+          required: true
+          schema: { type: integer }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                question_id: { type: string, example: Q1 }
+      responses:
+        "201":
+          description: Audio stored; receipt contains no score.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnswerSubmissionReceipt"
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /hr/auth/login:
+    post:
+      tags: [HR]
+      operationId: hrDemoLogin
+      summary: Mock/demo login only; label clearly in UI and README.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, writeOnly: true }
+      responses:
+        "200":
+          description: Demo session established.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated: { type: boolean }
+                  mode: { type: string, const: mocked }
+                required: [authenticated, mode]
+
+  /hr/auth/session:
+    get:
+      tags: [HR]
+      operationId: getHrSession
+      security: [{ HrSession: [] }]
+      responses:
+        "200":
+          description: Current HR demo session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated: { type: boolean }
+                  mode: { type: string, const: mocked }
+                required: [authenticated, mode]
+
+  /hr/roles:
+    get:
+      tags: [HR]
+      operationId: listRoles
+      security: [{ HrSession: [] }]
+      responses:
+        "200":
+          description: Roles in imported pipeline.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Role"
+
+  /hr/roles/{roleId}/candidates:
+    get:
+      tags: [HR]
+      operationId: listRoleCandidates
+      security: [{ HrSession: [] }]
+      parameters:
+        - in: path
+          name: roleId
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Candidate list and answer/job summaries for one role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateListResponse"
+
+  /hr/answers/{submissionId}:
+    get:
+      tags: [HR]
+      operationId: getHrAnswerDetail
+      security: [{ HrSession: [] }]
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: HR-only answer, version, score, job and audio metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HrAnswerDetail"
+
+  /hr/scoring-jobs:
+    get:
+      tags: [HR]
+      operationId: listScoringJobs
+      security: [{ HrSession: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [queued, scored, failed, needs_a_person]
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        "200":
+          description: HR-visible scoring job states.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScoringJob"
+
+  /hr/scoring-jobs/{jobId}/retry:
+    post:
+      tags: [HR]
+      operationId: retryScoringJob
+      security: [{ HrSession: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: integer }
+      responses:
+        "202":
+          description: Retry queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScoringJob"
+
+  /hr/answers/{submissionId}/review:
+    put:
+      tags: [HR]
+      operationId: overrideSuggestedScore
+      security: [{ HrSession: [] }]
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [final_score, reason]
+              properties:
+                final_score: { type: integer, minimum: 1, maximum: 4 }
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        "200":
+          description: HR decision stored separately from AI suggestion.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submission_id, suggested_score, final_score, reason]
+                properties:
+                  submission_id: { type: integer }
+                  suggested_score: { type: [integer, "null"], minimum: 1, maximum: 4 }
+                  final_score: { type: integer, minimum: 1, maximum: 4 }
+                  reason: { type: string }
+
+components:
+  securitySchemes:
+    CandidateToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-personal-token
+    HrSession:
+      type: apiKey
+      in: cookie
+      name: hr_session
+  schemas:
+    Role:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+    CandidateInterview:
+      type: object
+      required: [candidate, questions, progress]
+      properties:
+        candidate:
+          type: object
+          required: [display_name]
+          properties:
+            display_name: { type: string }
+        questions:
+          type: array
+          items:
+            type: object
+            required: [id, external_id, position, question_text]
+            properties:
+              id: { type: integer }
+              external_id: { type: string, example: Q1 }
+              position: { type: integer }
+              question_text: { type: string }
+        progress:
+          $ref: "#/components/schemas/CandidateProgress"
+    CandidateProgress:
+      type: object
+      required: [current_question_external_id, submitted_question_ids]
+      properties:
+        current_question_external_id: { type: [string, "null"] }
+        submitted_question_ids:
+          type: array
+          items: { type: string }
+    AnswerSubmissionRequest:
+      type: object
+      required: [question_id, answer_text]
+      properties:
+        question_id: { type: string, example: Q1 }
+        answer_text: { type: string, minLength: 1, maxLength: 20000 }
+    AnswerSubmissionReceipt:
+      type: object
+      required: [submission_id, question_id, received, scoring_status, version]
+      properties:
+        submission_id: { type: integer }
+        question_id: { type: string }
+        received: { type: boolean, const: true }
+        scoring_status:
+          type: string
+          enum: [queued, scored, failed, needs_a_person]
+        version: { type: integer }
+        current: { type: boolean }
+    CandidateListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [candidate_id, name, answer_count]
+            properties:
+              candidate_id: { type: integer }
+              external_id: { type: string }
+              name: { type: string }
+              answer_count: { type: integer }
+              scored_count: { type: integer }
+              failed_count: { type: integer }
+        pagination:
+          type: object
+          properties:
+            page: { type: integer }
+            page_size: { type: integer }
+            total: { type: integer }
+    HrAnswerDetail:
+      type: object
+      required: [submission_id, candidate, question, submitted_at, is_current]
+      properties:
+        submission_id: { type: integer }
+        external_answer_id: { type: [string, "null"] }
+        candidate:
+          type: object
+          properties:
+            external_id: { type: string }
+            name: { type: string }
+            role: { type: string }
+        question:
+          type: object
+          properties:
+            external_id: { type: string }
+            question_text: { type: string }
+            grading_guide: { type: string }
+        answer_text: { type: [string, "null"] }
+        audio_available: { type: boolean }
+        audio_download_url: { type: [string, "null"], format: uri }
+        submitted_at: { type: string, format: date-time }
+        version: { type: integer }
+        is_current: { type: boolean }
+        scoring_job:
+          oneOf:
+            - $ref: "#/components/schemas/ScoringJob"
+            - type: "null"
+        suggested_score: { type: [integer, "null"], minimum: 1, maximum: 4 }
+        reason: { type: [string, "null"] }
+        hr_final_score: { type: [integer, "null"], minimum: 1, maximum: 4 }
+        hr_override_reason: { type: [string, "null" ]}
+    ScoringJob:
+      type: object
+      required: [id, status, attempt_count, can_retry]
+      properties:
+        id: { type: integer }
+        status:
+          type: string
+          enum: [queued, scored, failed, needs_a_person]
+        attempt_count: { type: integer }
+        can_retry: { type: boolean }
+        error_message: { type: [string, "null"] }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Idempotency key reused with a different payload or conflicting state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: Uploaded file exceeds configured size limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMediaType:
+      description: Uploaded file type is not accepted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
